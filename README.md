@@ -1,107 +1,126 @@
-# Traffic Flow Analysis (3 Lanes, Tracking + Counting)
+# Traffic Flow Analysis: Detection, Tracking and Per-Lane Counting
 
-This repo contains a complete, minimal solution for the **Traffic Flow Analysis** task:
-- Detect vehicles with a pre-trained COCO model (YOLOv8).
-- Track vehicles across frames (ByteTrack via Ultralytics).
-- Define **three lanes** (polygons) and **count vehicles per lane** (unique track IDs).
-- Export a CSV with `VehicleID, Lane, Frame, Timestamp`.
-- Save an annotated video with real-time overlays and final per-lane summary.
+A Python pipeline that detects vehicles in roadside video, tracks them across frames, and counts each vehicle once per lane. Lanes are defined by polygons you draw on the first frame.
 
-> Input video: https://www.youtube.com/watch?v=MNn9qKG2UFI
+**Demo:** [Watch the annotated output](https://youtu.be/MmqZMJf6Tz8)
 
----
+## What this project is
 
-## 1) Setup (Python 3.10+ recommended)
+The detector and tracker are pretrained models from [Ultralytics](https://github.com/ultralytics/ultralytics): YOLOv8 (COCO weights) and ByteTrack. The code in this repository is the part built around them:
+
+- a lane calibration tool (click polygon points on the first frame, save to JSON)
+- per-lane counting logic based on tracked IDs and point-in-polygon tests
+- CSV, summary and annotated-video outputs
+
+## Pipeline
+
+1. **Detect** cars, motorcycles, buses and trucks (COCO classes 2, 3, 5, 7) with YOLOv8.
+2. **Track** detections across frames with ByteTrack, giving each vehicle an ID.
+3. **Assign lanes.** For each tracked box, take the centroid and test it against the three lane polygons with `cv2.pointPolygonTest`. A point on an edge counts as inside.
+4. **Count.** A vehicle ID is added to a lane's set the first time its centroid falls inside that lane. The lane count is the size of the set.
+5. **Export** a CSV log, a text summary and an annotated video.
+
+## Setup (Python 3.10+)
 
 ```bash
-# (Recommended) Create and activate a virtual environment
 python -m venv .venv
 # Windows
 . .venv/Scripts/activate
 # macOS/Linux
 source .venv/bin/activate
 
-# 1. Install PyTorch (choose CPU or CUDA build)
-# CPU-only (works everywhere):
+# PyTorch: CPU-only build
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-
-# (Optional) CUDA 12.1 (if you have a compatible NVIDIA GPU):
+# Or, for a compatible NVIDIA GPU (CUDA 12.1):
 # pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
-# 2. Install remaining dependencies
 pip install -r requirements.txt
 ```
 
-If `yt-dlp` fails due to network restrictions, download the MP4 manually and pass `--video-file path/to/file.mp4` when running.
+`requirements.txt` should contain: `ultralytics`, `opencv-python`, `numpy`, `pandas`, `yt-dlp`.
 
----
+If `yt-dlp` fails because of network restrictions, download the MP4 manually and pass `--video-file path/to/video.mp4`.
 
-## 2) Calibrate Lane Polygons (one-time)
+## Usage
 
-Run the calibration tool to **draw 3 lane polygons** on the first frame:
+The script has two subcommands, `calibrate` and `run`.
 
-```bash
-python main.py --mode calibrate --video-url https://www.youtube.com/watch?v=MNn9qKG2UFI --lanes lanes.json
-```
-**Instructions (on-screen):**
-- Click points around **Lane 1** in order (counter-clockwise or clockwise).
-- Press **`n`** to finish Lane 1 and start Lane 2.
-- Repeat for **Lane 2** and **Lane 3**.
-- Use **`u`** to undo the last point, **`r`** to reset current lane, **`q`** to abort.
-- When all 3 lanes are defined, the JSON file is saved (default: `lanes.json`).
-
-> Tip: Try to tightly wrap each lane with a clean polygon that does not overlap others.
-
----
-
-## 3) Run Analysis
+### 1. Calibrate the lanes (one time per camera view)
 
 ```bash
-# Using the original YouTube URL (downloaded automatically to ./inputs/input.mp4)
-python main.py --mode run --video-url https://www.youtube.com/watch?v=MNn9qKG2UFI --lanes lanes.json --output-dir outputs
-
-# OR if you already have the MP4
-python main.py --mode run --video-file path/to/your.mp4 --lanes lanes.json --output-dir outputs
+python main.py calibrate --video-url https://www.youtube.com/watch?v=MNn9qKG2UFI --lanes lanes.json
 ```
 
-Key optional flags:
-- `--model yolov8n.pt` (default) – use `yolov8s.pt` or above for higher accuracy.
-- `--conf 0.25` – detection confidence threshold.
-- `--device 0` – GPU index or `cpu`.
+Or with a local file:
 
-Outputs placed in `outputs/`:
-- `counts.csv` – rows: `VehicleID,Lane,Frame,Timestamp`.
-- `annotated.mp4` – overlay video with lanes, boxes, IDs, and live counts.
-- `summary.txt` – total count per lane.
-
----
-
-## 4) What Counts As a Vehicle?
-We include COCO classes: **car(2), motorcycle(3), bus(5), truck(7)**. Edit `--classes` if you want to change.
-
----
-
-## 5) Troubleshooting
-- If PyTorch is missing CUDA, it will fall back to CPU.
-- If you see no tracks/IDs, ensure `--conf` is not too high and the lanes cover the roadway.
-- If FPS is very low, try a smaller model (`yolov8n.pt`) or reduce the input frame size (`--max-width 1280`).
-
----
-
-## 6) Demo Video
-## 6) Demo Video
-
-👉 [Watch Demo Video](https://youtu.be/MmqZMJf6Tz8)
-
-The demo shows the annotated output (`annotated.mp4`) with:
-- Lane polygons overlaid in yellow
-- Vehicle detections with bounding boxes and unique IDs
-- Live per-lane counts in the top-left corner
-
-For submission, the annotated video was trimmed to ~1–2 minutes for clarity using `ffmpeg`:
 ```bash
-ffmpeg -y -ss 00:00:10 -t 00:01:30 -i outputs/annotated.mp4 -c copy outputs/demo.mp4
+python main.py calibrate --video-file path/to/video.mp4 --lanes lanes.json
+```
+
+Controls in the calibration window:
+
+| Key / action | Effect |
+|---|---|
+| Left click | Add a point to the current lane polygon |
+| `n` | Finish the current lane (needs at least 3 points) and start the next |
+| `u` | Undo the last point |
+| `r` | Reset the current lane |
+| `q` | Abort without saving |
+
+After the third lane is finished, the polygons are saved to `lanes.json`. Keep the polygons tight around each lane and avoid overlaps.
+
+### 2. Run the analysis
+
+```bash
+python main.py run --video-url https://www.youtube.com/watch?v=MNn9qKG2UFI --lanes lanes.json --output-dir outputs
+```
+
+Or with a local file:
+
+```bash
+python main.py run --video-file path/to/video.mp4 --lanes lanes.json --output-dir outputs
+```
+
+Options for `run`:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--model` | `yolov8n.pt` | Ultralytics model name or path (`yolov8s.pt` or larger is more accurate but slower) |
+| `--conf` | `0.25` | Detection confidence threshold |
+| `--device` | auto | `cpu` or a CUDA index such as `0` |
+| `--classes` | `2 3 5 7` | COCO class IDs to include |
+| `--max-width` | `1280` | Resize frames to this width for speed (`0` disables resizing) |
+
+Press `q` in the preview window to stop early.
+
+## Outputs (in `outputs/`)
+
+- `counts.csv`: `VehicleID, Lane, Frame, Timestamp`, one row per vehicle per lane, logged when it is first counted
+- `annotated.mp4`: lane polygons, bounding boxes, track IDs and live per-lane counts
+- `summary.txt`: final count per lane
+
+## Limitations
+
+- **ID switches inflate counts.** A vehicle that is occluded and re-identified with a new track ID is counted again.
+- **Lane changes.** A vehicle that moves between lanes is counted once in each lane it enters.
+- **Cumulative counts, not flow rates.** Counts are totals over the clip, not vehicles per minute.
+- **Static camera only.** Lane polygons are fixed in image coordinates.
+- **Pretrained classes only.** The model is not fine-tuned for this scene, so small, distant or heavily overlapping vehicles may be missed.
 
 
-## 7) License
-For educational use. Ensure your use of the input video respects YouTube's Terms of Service.
+## Troubleshooting
+
+- **No tracks or IDs appear:** lower `--conf` and check that the lane polygons cover the road.
+- **Low frame rate:** use `yolov8n.pt`, or reduce `--max-width`.
+- **PyTorch has no CUDA support:** it falls back to CPU automatically.
+
+## Project structure
+
+```
+traffic-flow-analysis/
+├── main.py
+├── requirements.txt
+├── lanes.json        # created by the calibrate step
+├── inputs/           # downloaded video
+└── outputs/          # annotated.mp4, counts.csv, summary.txt
+```
